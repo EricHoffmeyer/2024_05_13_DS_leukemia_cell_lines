@@ -1,0 +1,184 @@
+---
+title: "2024_06_20_Dallas_figures"
+format: html
+editor: source
+---
+
+Dallas needs a few figures made for his newest publication. This notebook will document the process of making those figures.
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(DESeq2)
+library(EnhancedVolcano)
+library(GeneTonic)
+library(pcaExplorer)
+library(AnnotationDbi)
+library(topGO)
+library(org.Hs.eg.db)
+```
+
+# Directories
+
+```{r}
+results.dir <- "2024_06_20_results/"
+```
+
+# Volcano plot
+
+A volcano plot of the DE genes done in the bulk comparison of K-C, N-C, and S-C vs DS_1_X, DS_76_C, and DC_81_C
+
+## Volcano plot data
+
+It's pretty hard to decipher what Devon did and when. His scripts are all large, written and run on bodhi. It may just be easier to read in the samples and do DESeq ourselves.
+
+I think I can start with his processed counts
+
+```{r}
+counts.df <- read.csv(file = "data/2021_03_08_jones_counts.csv") |> 
+  column_to_rownames("hgnc.symbol")
+metadata <- read.delim(file = "metadata/sample_metadata.txt", sep = "\t")
+```
+
+I have to do a little subsetting of the data and the metadata first
+
+```{r}
+# Change 76_C and 81_1 names to be consistent with counts.df
+metadata <- metadata |> 
+  mutate(sample = ifelse(sample == "76_C", "X76_C", sample),
+         sample = ifelse(sample == "81_C", "X81_C", sample))
+
+
+# Create subset vector
+subset.vector <- c("K_C", "N_C", "S_C", "X76_C", "X81_C", "DS1_X")
+
+# Subset metadata
+subset.meta <- metadata |>
+  filter(sample %in% subset.vector)
+
+# Subset counts matrix
+subset.sf.df <- round(counts.df) |>
+  dplyr::select(all_of(subset.vector)) |> 
+  dplyr::relocate(X76_C, X81_C, K_C, N_C,  S_C, DS1_X)
+
+```
+
+Build up the SE object
+
+```{r}
+# Build coldata
+subset.coldata <- data.frame(sample = subset.meta$sample,
+                      condition = as.factor(subset.meta$ds),
+                      row.names = "sample")
+
+# NOTE: I think Devon normalized these counts somehow, as they are not whole integers. I am rounding them to the nearest whole integer, which is required for DESeq.
+
+subset.matrix <- as.matrix(subset.sf.df)
+```
+
+```{r}
+# Check to see that counts columns 
+all(rownames(subset.coldata) %in% colnames(subset.matrix))
+
+all(colnames(subset.matrix) %in% rownames(subset.coldata))
+```
+
+```{r}
+subset.se <- SummarizedExperiment(assays = list(counts = subset.matrix),
+                                  colData = subset.coldata)
+subset.se
+```
+
+```{r}
+subset.dds <- DESeqDataSet(subset.se, design = ~ condition)
+```
+
+```{r}
+subset.dds <-  DESeq(subset.dds)
+
+# Create a results table of our comparison of interest
+subset.res <- results(subset.dds,
+                        contrast = c("condition", "yes", "no"),
+                        alpha = 0.05)
+```
+
+```{r}
+subset.ids <- subset.sf.df |>
+  rownames_to_column(var = "gene_id")
+
+subset.anno <- deseqresult2df(subset.res) |>
+  dplyr::rename(gene_id = id) |>
+  mutate(gene_entrez = mapIds(org.Hs.eg.db,
+                              keys = gene_id,
+                              keytype = "SYMBOL",
+                              column = "ENTREZID",
+                              multiVals = "first")) |>
+  mutate(gene_desc = mapIds(org.Hs.eg.db,
+                            keys = gene_id,
+                            keytype = "SYMBOL",
+                            column = "GENENAME",
+                            multiVals = "first")) |>
+  relocate(gene_entrez, gene_desc, .after = gene_id) |>
+  left_join(subset.ids,
+            by = c("gene_id"="gene_id")) |>
+  na.omit()
+
+head(subset.anno)
+```
+
+```{r}
+write_csv(subset.anno, file = paste0(results.dir, "ds.vs.kns.deseq.csv"))
+```
+
+Now we can create our plots
+
+## Creating plot
+
+```{r}
+volc.plot <- EnhancedVolcano(toptable = subset.anno,
+                lab = subset.anno$gene_id,
+                x = "log2FoldChange",
+                y = "padj",
+                # keeping the lines below commented out for future formatting
+                # xlim = c(-3, 3),
+                # ylim = c(-0.5, 8),
+                # FCcutoff = ,
+                title = "DS vs NDS",
+                subtitle = "DESeq2 Results",
+                pCutoff = 0.05,
+                legendPosition = "none",
+                caption = "")
+
+# volc.plot |>
+#   ggsave(filename = "2024_01_19_results/Mixed.CD4.B.vs.Reject.CD4.B/Mixed.CD4.B.VS.Reject.CD4.B.volcano.png")
+
+# I only defined volc.plot to show the plot for presentation purposes
+# you could pipe EnhancedVolcano() directly into ggsave
+volc.plot
+```
+
+
+
+```{r}
+chrom21.genes <- read.delim(file = "data/gene.info.txt", sep = "\t") |> 
+  filter(str_detect(location_sortable, "21q") | str_detect(location_sortable, "21p"))
+# symbol
+```
+
+```{r}
+temp <- inner_join(subset.anno, chrom21.genes, by = c("gene_id" = "symbol"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
