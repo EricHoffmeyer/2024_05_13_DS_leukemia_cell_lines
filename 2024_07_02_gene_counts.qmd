@@ -1,0 +1,225 @@
+---
+title: "2024_07_02_gene_counts"
+format: html
+editor: source
+---
+
+Dallas is working with a collaborator on the Down Syndome patient vs derived cell line data. The collaborator requent a gene count matrix for all the samples.
+
+Devon's previous analysis includes salmon outputs (quant.sf files) for 
+
+Patient 76 and 81 patient samples were sequenced with single end instead of paired and the data went directly to Kelly Sullivan. I was able to request the fastq files from Meher Boorgula and then I processed them on bodhi.
+
+This notebook will
+
+# Libraries
+
+```{r}
+suppressPackageStartupMessages({
+library(tidyverse)
+library(DESeq2)
+library(pcaExplorer)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(topGO)
+library(purrr)
+library(GeneTonic)
+})
+library(EnsDb.Hsapiens.v86)
+```
+
+# Directories
+
+```{r}
+result.dir <- "2024_07_02_results/"
+
+if(!exists(result.dir)){
+  dir.create(result.dir)}
+
+data.dir <- "eric_data"
+```
+
+# Data dictionary
+
+Make a small metadata file
+
+```{r}
+dir.names = c(
+"2021_02_12_DS1_Cell",
+"2021_02_12_DS1_Pt",
+"2021_02_12_DS76_Cell",
+"2021_02_12_DS81_Cell",
+"2024_07_02_DS76_Pt",
+"2024_07_02_DS81_Pt"
+)
+```
+
+A vector
+
+```{r}
+mode(dir.names)
+str(dir.names)
+```
+
+Convert the `vector` to `data.frame`.
+
+```{r}
+data.dictionary = data.frame(orig.name = dir.names, folder.name = dir.names)
+```
+
+## Transform Dictionary
+
+Perform these steps to transform the `data.frame` into desirable format.
+
+```{r}
+data.dictionary <-  data.dictionary |> 
+  ## Create or duplicate the "Orig.Name" column and called it "Dup"
+  mutate(dup = folder.name) |> 
+  ## Breakup (separate) the "Dup" column using "_" as its separator
+  separate_wider_delim(dup, names = c("year", "month", "day", "patient", "sample"), delim = "_") |>
+  ## Make "treatment" column a factor
+  mutate(patient = as.factor(patient),
+         sample = as.factor(sample),
+         orig.name = str_remove(orig.name, "2021_02_12_"),
+         orig.name = str_remove(orig.name, "2024_07_02_"))
+```
+
+```{r}
+data.dictionary
+```
+
+# Gene count matrix prep
+
+## Read in refence gtf
+
+```{r}
+load(file = "../../REFERENCE_GTF/human38_gtf_df.Rdata")
+```
+
+## Look up table
+
+Create a look-up-table matching gene id to all its transcript ids:
+
+```{r}
+tx2gene_df <- gtf_df |>
+  dplyr::select(transcript_id, gene_id) |>
+	distinct(transcript_id, gene_id) |>
+  drop_na()
+
+tx2gene_df
+```
+
+# Salmon loop
+
+Pre-define count table matrix by importing one of Salmon result to determine the number of genes for the table matrix.
+
+```{r}
+## Assesss how many genes in each sample?
+tmp <- read.delim(file = paste("eric_data", data.dictionary$folder.name[1], "quant.sf", sep = "/")) |>
+  # The Ensembl ID (Name) column has an extra period (.) and a digit, remove them
+  mutate(Name = str_sub(Name, end=-3)) |>
+  # Add gene id onto the table matching against transcript id:
+  inner_join(tx2gene_df, by = c("Name" = "transcript_id")) |>
+  ## Sum up all the counts for each gene id from all its transcript ids
+  group_by(gene_id) |>
+  summarise(NumReads = as.integer(sum(NumReads)))
+
+tmp2 <-  read.delim(file = paste("eric_data/2024_07_02_DS76_Pt/quant.sf", sep = "/")) |>
+  # The Ensembl ID (Name) column has an extra period (.) and a digit, remove them
+  mutate(Name = str_sub(Name, end=-3)) |>
+  # Add gene id onto the table matching against transcript id:
+  inner_join(tx2gene_df, by = c("Name" = "transcript_id")) |>
+  ## Sum up all the counts for each gene id from all its transcript ids
+  group_by(gene_id) |>
+  summarise(NumReads = as.integer(sum(NumReads)))
+```
+
+Now we can pre-define an empty data matrix to the correct dimensions. Then we will perform a loop to read the quant files and fill in the data matrix on column at a time.
+
+```{r}
+sf.df <- data.frame(matrix(0, 
+                           nrow = length(tmp$gene_id),
+                           ncol = length(data.dictionary$folder.name)))
+
+colnames(sf.df) <-  data.dictionary$orig.name
+rownames(sf.df) <-  tmp$gene_id
+
+vector <- c("2021_02_12_DS1_Cell", "2021_02_12_DS1_Pt", "2021_02_12_DS76_Cell", "2021_02_12_DS81_Cell")
+
+for(i in seq_along(vector)){
+  cat("Now reading...", data.dictionary$folder.name[i], "\n")
+  
+  sf.df[,i] <-  read.delim(paste0("eric_data/", data.dictionary$folder.name[i], "/quant.sf")) |>
+    mutate(Name = str_sub(Name, end = -3)) |>
+    inner_join(tx2gene_df, by = c("Name" = "transcript_id")) |>
+    group_by(gene_id) |>
+    summarise(NumReads = as.integer(sum(NumReads))) |>
+    pull(NumReads)
+}
+```
+
+
+```{r}
+vector <- c("2024_07_02_DS76_Pt", "2024_07_02_DS81_Pt")
+
+sub.data.dictionary <- data.dictionary |> 
+  dplyr::filter(folder.name %in% vector)
+
+sf.df.2 <- data.frame(matrix(0, 
+                           nrow = length(tmp2$gene_id),
+                           ncol = length(sub.data.dictionary$folder.name)))
+
+colnames(sf.df.2) <-  sub.data.dictionary$orig.name
+rownames(sf.df.2) <-  tmp2$gene_id
+
+for(i in seq_along(vector)){
+  cat("Now reading...", sub.data.dictionary$folder.name[i], "\n")
+  
+  sf.df.2[,i] <-  read.delim(paste0("eric_data/", sub.data.dictionary$folder.name[i], "/quant.sf")) |>
+    mutate(Name = str_sub(Name, end = -3)) |>
+    inner_join(tx2gene_df, by = c("Name" = "transcript_id")) |>
+    group_by(gene_id) |>
+    summarise(NumReads = as.integer(sum(NumReads))) |>
+    pull(NumReads)
+}
+```
+
+Annotate the sf.df files by swapping Ensembl ID for gene name
+
+```{r}
+sf.df.anno <- sf.df |> 
+  rownames_to_column(var = "gene_id") |> 
+  mutate(gene_symbol = mapIds(org.Hs.eg.db, keys = gene_id, keytype = "ENSEMBL", column = "SYMBOL", multiVals = "first"),
+         .after = gene_id) |> 
+  dplyr::select(2:6)
+
+sf.df.2.anno <- sf.df.2 |> 
+  rownames_to_column(var = "gene_id") |> 
+  mutate(gene_symbol = mapIds(org.Hs.eg.db, keys = gene_id, keytype = "ENSEMBL", column = "SYMBOL", multiVals = "first"),
+         .after = gene_id) |> 
+  dplyr::select(2:4)
+```
+
+Now do an inner_join to keep only the gene present in both samples
+
+```{r}
+gene.counts <- left_join(sf.df.anno, sf.df.2.anno, by = "gene_symbol")
+
+temp <- inner_join(sf.df, sf.df.2, by = )
+
+head(gene.counts)
+```
+
+```{r}
+rm(gene.counts)
+```
+
+
+```{r}
+?left_join
+```
+
+
+
+
+

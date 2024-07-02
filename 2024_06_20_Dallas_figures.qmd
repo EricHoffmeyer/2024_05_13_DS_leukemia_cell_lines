@@ -72,6 +72,8 @@ subset.coldata <- data.frame(sample = subset.meta$sample,
                       condition = as.factor(subset.meta$ds),
                       row.names = "sample")
 
+
+
 # NOTE: I think Devon normalized these counts somehow, as they are not whole integers. I am rounding them to the nearest whole integer, which is required for DESeq.
 
 subset.matrix <- as.matrix(subset.sf.df)
@@ -82,6 +84,9 @@ subset.matrix <- as.matrix(subset.sf.df)
 all(rownames(subset.coldata) %in% colnames(subset.matrix))
 
 all(colnames(subset.matrix) %in% rownames(subset.coldata))
+
+# check levels: we want "no" to come first and be the reference
+levels(subset.coldata$condition)
 ```
 
 ```{r}
@@ -93,6 +98,12 @@ subset.se
 ```{r}
 subset.dds <- DESeqDataSet(subset.se, design = ~ condition)
 ```
+
+```{r}
+levels(subset.dds@colData$condition)
+```
+
+
 
 ```{r}
 subset.dds <-  DESeq(subset.dds)
@@ -148,10 +159,8 @@ volc.plot <- EnhancedVolcano(toptable = subset.anno,
                 subtitle = "DESeq2 Results",
                 pCutoff = 0.05,
                 legendPosition = "none",
-                caption = "")
-
-# volc.plot |>
-#   ggsave(filename = "2024_01_19_results/Mixed.CD4.B.vs.Reject.CD4.B/Mixed.CD4.B.VS.Reject.CD4.B.volcano.png")
+                caption = "") |>
+  ggsave(filename = paste0(results.dir, "ds.vs.kns.volcano.png"))
 
 # I only defined volc.plot to show the plot for presentation purposes
 # you could pipe EnhancedVolcano() directly into ggsave
@@ -163,11 +172,15 @@ volc.plot
 ```{r}
 chrom21.genes <- read.delim(file = "data/gene.info.txt", sep = "\t") |> 
   filter(str_detect(location_sortable, "21q") | str_detect(location_sortable, "21p"))
-# symbol
 ```
 
 ```{r}
-temp <- inner_join(subset.anno, chrom21.genes, by = c("gene_id" = "symbol"))
+# Join chrom21.genes and subset.anno by creating a new dataframe with only genes that exist in both dataframes.
+chrom21.de.results <- inner_join(subset.anno, chrom21.genes, by = c("gene_id" = "symbol")) |> 
+  dplyr::select(1:15, location) |> 
+  relocate(location, .after = gene_id)
+
+write.csv(chrom21.de.results, file = paste0(results.dir, "Chrom21.de.genes.csv"))
 ```
 
 
