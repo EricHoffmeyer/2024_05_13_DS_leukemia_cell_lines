@@ -1,16 +1,21 @@
 ---
 title: "2024_07_02_gene_counts"
-format: html
-editor: source
+editor: visual
+format: 
+  html:
+    page-layout: full
+    df-print: kable
 ---
 
-Dallas is working with a collaborator on the Down Syndome patient vs derived cell line data. The collaborator requent a gene count matrix for all the samples.
+Dallas is working with a collaborator on the Down Syndrome patient vs derived cell line data. The collaborator requested a gene count matrix for the samples.
 
-Devon's previous analysis includes salmon outputs (quant.sf files) for 
+There are three samples (DS1, DS76, and DS81) that have bulk data from the initial bone marrow sample (called "patient") and the cell line derived from the bone marrow sample (called "cell line").
 
-Patient 76 and 81 patient samples were sequenced with single end instead of paired and the data went directly to Kelly Sullivan. I was able to request the fastq files from Meher Boorgula and then I processed them on bodhi.
+Devon's previous analysis includes salmon outputs (quant.sf files) for DS1 patient and cell line, DS76 cell line, and DS81 cell line
 
-This notebook will
+DS76 and 81 patient samples were sequenced separately, with single end instead of paired and the data went directly to Kelly Sullivan. I was able to request the fastq files from Meher Boorgula and then I processed them on bodhi.
+
+This notebook will read in the quant.sf files for each of the samples and combine them into a count matrix annotated with gene symbol.
 
 # Libraries
 
@@ -18,25 +23,22 @@ This notebook will
 suppressPackageStartupMessages({
 library(tidyverse)
 library(DESeq2)
-library(pcaExplorer)
 library(AnnotationDbi)
 library(org.Hs.eg.db)
-library(topGO)
-library(purrr)
-library(GeneTonic)
 })
-library(EnsDb.Hsapiens.v86)
 ```
 
 # Directories
 
 ```{r}
+# To store results of this notebook
 result.dir <- "2024_07_02_results/"
 
 if(!exists(result.dir)){
   dir.create(result.dir)}
 
-data.dir <- "eric_data"
+# I put the quant.sf files into a folder in the project called "eric_data" to keep it separate from Devon's data folder.
+data.dir <- "eric_data/"
 ```
 
 # Data dictionary
@@ -52,45 +54,43 @@ dir.names = c(
 "2024_07_02_DS76_Pt",
 "2024_07_02_DS81_Pt"
 )
-```
 
-A vector
-
-```{r}
-mode(dir.names)
-str(dir.names)
+dir.names
 ```
 
 Convert the `vector` to `data.frame`.
 
 ```{r}
-data.dictionary = data.frame(orig.name = dir.names, folder.name = dir.names)
+data.dictionary <- data.frame(orig.name = dir.names, folder.name = dir.names)
+data.dictionary
 ```
 
 ## Transform Dictionary
 
-Perform these steps to transform the `data.frame` into desirable format.
+Do some wrangling to change the `data.frame` into desirable format. I will break up `orig.name` so I can remove the date and keep the sample names for column names in the future. I will keep `folder.name` as it to use it when reading in the `quant.sf` files.
 
 ```{r}
 data.dictionary <-  data.dictionary |> 
-  ## Create or duplicate the "Orig.Name" column and called it "Dup"
+  ## Duplicate the "orig.Name" column and called it "dup"
   mutate(dup = folder.name) |> 
-  ## Breakup (separate) the "Dup" column using "_" as its separator
+  # Separate the "dup" column using "_" as the separator
   separate_wider_delim(dup, names = c("year", "month", "day", "patient", "sample"), delim = "_") |>
-  ## Make "treatment" column a factor
+  ## Make patient and sample columns as.factor and remove date from orig.name
   mutate(patient = as.factor(patient),
          sample = as.factor(sample),
          orig.name = str_remove(orig.name, "2021_02_12_"),
          orig.name = str_remove(orig.name, "2024_07_02_"))
-```
 
-```{r}
+write.csv(data.dictionary, file = paste0(result.dir, "DS.CL.and.PT.metadata.csv"))
+
 data.dictionary
 ```
 
 # Gene count matrix prep
 
 ## Read in refence gtf
+
+I keep the gtf reference files in a separate reference folder, rather than keep a separate copy in every project. This chunk loads the gtf file. It is autmatically named `gtf_df`.
 
 ```{r}
 load(file = "../../REFERENCE_GTF/human38_gtf_df.Rdata")
@@ -111,19 +111,25 @@ tx2gene_df
 
 # Salmon loop
 
-Pre-define count table matrix by importing one of Salmon result to determine the number of genes for the table matrix.
+When I eventually run the code that loops through the quant.sf files, it will add them as a new column in an existing matrix. I need to create an empty matrix fist so I can tell the code loop where to add the output.
+
+I will do this by importing one of the Salmon result to determine the number of genes for the table matrix.
+
+The single end samples have a different number of rows than the other four samples, so I will have to do this process seprately: once for the paired end samples and again for the single end samples.
 
 ```{r}
-## Assesss how many genes in each sample?
+# Read in paired end samples. The first sample, DS1_cell, is paired end
 tmp <- read.delim(file = paste("eric_data", data.dictionary$folder.name[1], "quant.sf", sep = "/")) |>
   # The Ensembl ID (Name) column has an extra period (.) and a digit, remove them
   mutate(Name = str_sub(Name, end=-3)) |>
   # Add gene id onto the table matching against transcript id:
   inner_join(tx2gene_df, by = c("Name" = "transcript_id")) |>
-  ## Sum up all the counts for each gene id from all its transcript ids
+  # Sum up all the counts for each gene id from all its transcript ids
   group_by(gene_id) |>
   summarise(NumReads = as.integer(sum(NumReads)))
 
+
+# Repeat the process for the single end samples. DS76_Pt and DS81_Pt are the single end samples.
 tmp2 <-  read.delim(file = paste("eric_data/2024_07_02_DS76_Pt/quant.sf", sep = "/")) |>
   # The Ensembl ID (Name) column has an extra period (.) and a digit, remove them
   mutate(Name = str_sub(Name, end=-3)) |>
@@ -134,92 +140,219 @@ tmp2 <-  read.delim(file = paste("eric_data/2024_07_02_DS76_Pt/quant.sf", sep = 
   summarise(NumReads = as.integer(sum(NumReads)))
 ```
 
-Now we can pre-define an empty data matrix to the correct dimensions. Then we will perform a loop to read the quant files and fill in the data matrix on column at a time.
+The paired end samples have 35,060 rows. The single end samples have 35,113 rows.
+
+Now we can pre-define empty data matrices to the correct dimensions. Then we will perform a loop to read the quant files and fill in the data matrix on column at a time.
 
 ```{r}
-sf.df <- data.frame(matrix(0, 
-                           nrow = length(tmp$gene_id),
-                           ncol = length(data.dictionary$folder.name)))
-
-colnames(sf.df) <-  data.dictionary$orig.name
-rownames(sf.df) <-  tmp$gene_id
-
+# Create a vector that specifies which samples are paired end
 vector <- c("2021_02_12_DS1_Cell", "2021_02_12_DS1_Pt", "2021_02_12_DS76_Cell", "2021_02_12_DS81_Cell")
 
+# Create sf.df with the rows of tmp and the columns containing folder names from the vector just created
+sf.df <- data.frame(matrix(0, 
+                           nrow = length(tmp$gene_id),
+                           ncol = length(vector)))
+
+# By putting in vector as the colnames, it will read the first 4 samples and not the last 2 single end samples
+colnames(sf.df) <-  vector
+rownames(sf.df) <-  tmp$gene_id
+
+# Create a for loop to read in the samples. Reading the paired end samples only here.
 for(i in seq_along(vector)){
   cat("Now reading...", data.dictionary$folder.name[i], "\n")
   
-  sf.df[,i] <-  read.delim(paste0("eric_data/", data.dictionary$folder.name[i], "/quant.sf")) |>
+  # sf.df[,i] means the output of this each loop will be added as a new column in sf.df
+  sf.df[,i] <-  read.delim(paste0(data.dir, data.dictionary$folder.name[i], "/quant.sf")) |>
+    # trim off ensembl versions
     mutate(Name = str_sub(Name, end = -3)) |>
+    # merge with tx2gene_df by shared ensembl IDs
     inner_join(tx2gene_df, by = c("Name" = "transcript_id")) |>
     group_by(gene_id) |>
     summarise(NumReads = as.integer(sum(NumReads))) |>
     pull(NumReads)
 }
+
+sf.df
 ```
 
+Repeat this process for the single end reads. In order to avoid reading in the paired samples, I will create a subset of the original data dictionary.
 
 ```{r}
-vector <- c("2024_07_02_DS76_Pt", "2024_07_02_DS81_Pt")
+vector.2 <- c("2024_07_02_DS76_Pt", "2024_07_02_DS81_Pt")
 
 sub.data.dictionary <- data.dictionary |> 
-  dplyr::filter(folder.name %in% vector)
+  dplyr::filter(folder.name %in% vector.2)
 
 sf.df.2 <- data.frame(matrix(0, 
                            nrow = length(tmp2$gene_id),
-                           ncol = length(sub.data.dictionary$folder.name)))
+                           ncol = length(vector.2)))
 
-colnames(sf.df.2) <-  sub.data.dictionary$orig.name
+colnames(sf.df.2) <-  vector.2
 rownames(sf.df.2) <-  tmp2$gene_id
 
-for(i in seq_along(vector)){
+for(i in seq_along(vector.2)){
   cat("Now reading...", sub.data.dictionary$folder.name[i], "\n")
   
-  sf.df.2[,i] <-  read.delim(paste0("eric_data/", sub.data.dictionary$folder.name[i], "/quant.sf")) |>
+  sf.df.2[,i] <-  read.delim(paste0(data.dir, sub.data.dictionary$folder.name[i], "/quant.sf")) |>
     mutate(Name = str_sub(Name, end = -3)) |>
     inner_join(tx2gene_df, by = c("Name" = "transcript_id")) |>
     group_by(gene_id) |>
     summarise(NumReads = as.integer(sum(NumReads))) |>
     pull(NumReads)
 }
+
+sf.df.2
 ```
 
-Annotate the sf.df files by swapping Ensembl ID for gene name
+# Annotate with gene_symbols
+
+Move the Ensembl ID row names to their own column, called `gene_id`. Then join the two dataframes using the `gene_id` column. Though multiple Ensembl IDs may map to a single gene, each Ensembl ID is unique. That avoids multiple row names.
 
 ```{r}
 sf.df.anno <- sf.df |> 
-  rownames_to_column(var = "gene_id") |> 
-  mutate(gene_symbol = mapIds(org.Hs.eg.db, keys = gene_id, keytype = "ENSEMBL", column = "SYMBOL", multiVals = "first"),
-         .after = gene_id) |> 
-  dplyr::select(2:6)
+  rownames_to_column(var = "gene_id")
 
 sf.df.2.anno <- sf.df.2 |> 
-  rownames_to_column(var = "gene_id") |> 
-  mutate(gene_symbol = mapIds(org.Hs.eg.db, keys = gene_id, keytype = "ENSEMBL", column = "SYMBOL", multiVals = "first"),
-         .after = gene_id) |> 
-  dplyr::select(2:4)
+  rownames_to_column(var = "gene_id") 
+
+gene.counts <- inner_join(sf.df.anno, sf.df.2.anno, by = "gene_id")
 ```
 
-Now do an inner_join to keep only the gene present in both samples
+Now we can map a new gene symbol column using `gene_id.`
 
 ```{r}
-gene.counts <- left_join(sf.df.anno, sf.df.2.anno, by = "gene_symbol")
+gene.counts <- gene.counts |> 
+  mutate(gene_symbol = mapIds(org.Hs.eg.db, 
+                              keys = gene_id, 
+                              keytype = "ENSEMBL", 
+                              column = "SYMBOL", 
+                              multiVals = "first"),
+         .after = gene_id) |>
+  dplyr::select(!gene_id) |> 
+  na.omit()
 
-temp <- inner_join(sf.df, sf.df.2, by = )
-
-head(gene.counts)
 ```
+
+I originally mapped the Ensembl IDs to gene symbols and then tried to merge, but there were duplicate rownames. So we have to deal with duplicate rownames
+
+# Summing up duplicate rows
+
+First, identify which gene symbols have duplicates and put them into a vector.
 
 ```{r}
-rm(gene.counts)
+dupes <- gene.counts |> 
+  group_by(gene_symbol) |> 
+  summarise(counts = n()) |> 
+  arrange(desc(counts)) |> 
+  dplyr::filter(counts > 1) |> 
+  pull(gene_symbol)
+
+dupes
 ```
 
+47 duplicates. Now filter out those duplicate samples from the original `gene.counts` df:
 
 ```{r}
-?left_join
+dupe.df <- gene.counts |> 
+  dplyr::filter(gene_symbol %in% dupes)
 ```
 
+Now we need to isolate each duplicate and add up the column values. I will make a function to do this but let's run it though an iteration to test each step.
 
+The first duplicate, in alphabetical order, is "ANKRD45".
 
+```{r}
+# Creating a subset dataframe for the duplicate gene
+temp <- dupe.df |> 
+  dplyr::filter(gene_symbol == "ANKRD45")
 
+# Created a vector with the column names of the samples
+col.names <- colnames(temp[2:7])
 
+# Creating a new dataframe that store the result of running column sum on the numeric columns of `temp`
+# sum cannot be run on character columns, so we have to keep them separated.
+temp2 <- data.frame(apply(temp[2:7], MARGIN = 2, sum)) |> 
+  # output is originally a one column dataframe, we need to transpose it to replicate the format of gene.counts
+  t()
+
+# Add the gene back in as the row name
+rownames(temp2) <- "ANKRD45"
+
+# Add the samples back in as column names
+colnames(temp2) <- col.names
+
+# Look at the result dataframe
+head(temp2)
+```
+
+Okay that process appears to work. I can run a for loop to do this now. I will need an existing dataframe to add the result of each loop. I'll create an empty dataframe with the right column names.
+
+```{r}
+dupe.sum.df <- data.frame(X1 = numeric(),
+                    X2 = numeric(),
+                    X3 = numeric(),
+                    X4 = numeric(),
+                    X5 = numeric(),
+                    X6 = numeric())
+
+colnames(dupe.sum.df) <- col.names
+```
+
+Now I will run the function to do column sums, and output each loop as a new row in `dupe.sum.df`.
+
+```{r}
+for (i in dupes){
+  # repeat the code chunk above, substituting i for the gene_symbol
+  temp <- dupe.df |> 
+    dplyr::filter(gene_symbol == i)
+  
+  col.names <- colnames(temp[2:7])
+  
+  temp2 <- data.frame(apply(temp[2:7], MARGIN = 2, sum)) |> 
+    t()
+  
+  rownames(temp2) <- i
+  
+  colnames(temp2) <- col.names
+  
+  # this step adds the loop output, temp2, as a new row in dupe.sum.df
+  dupe.sum.df[i,] <- temp2
+}
+
+dupe.sum.df
+```
+
+Now bring back the row names as a column
+
+```{r}
+dupe.sum.df <- dupe.sum.df |> 
+  rownames_to_column(var = "gene_symbol")
+
+```
+
+# Merging dupe.sum.df with the rest of the data
+
+We have our duplcate gene symbols added now. We can add this to the `gene.counts` dataframe, but we also need to remove the duplicate rows from `gene.counts` before we do that
+
+```{r}
+# Remove the duplicate rows from gene.counts
+unique.df <- gene.counts[!gene.counts$gene_symbol %in% dupes,]
+```
+
+Now I can merge the dataframes using `rbind()`
+
+```{r}
+final.counts <- rbind(dupe.sum.df, unique.df)
+```
+
+Save the results
+
+```{r}
+write.csv(final.counts, file = paste0(result.dir, "DS.CL.and.PT.counts.csv"))
+```
+
+# sessionInfo
+
+```{r}
+sessionInfo()
+```
