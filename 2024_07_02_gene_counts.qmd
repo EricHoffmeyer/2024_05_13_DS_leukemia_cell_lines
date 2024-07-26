@@ -1,6 +1,6 @@
 ---
 title: "2024_07_02_gene_counts"
-editor: visual
+editor: source
 format: 
   html:
     page-layout: full

@@ -46,14 +46,14 @@ counts.df <- read.csv(file = paste0(data.dir, "DS.CL.and.PT.counts.csv")) |>
   dplyr::select(!X) |> 
   column_to_rownames("gene_symbol")
 
+metadata <- read.csv(file = paste0(data.dir, "DS.CL.and.PT.metadata.csv")) |> 
+  dplyr::select(!X)
+
 counts.df <- mutate(counts.df, Rowsum = apply(counts.df, 1, function(x) sum(x > 10))) %>% 
   ### All values must be more than 10 (set to x if only x value is satisfied)
   dplyr::filter(Rowsum == dim(metadata)[1]) %>% 
   ## No longer need the column "Rowsum", we can remove it
   dplyr::select(-Rowsum)
-
-metadata <- read.csv(file = paste0(data.dir, "DS.CL.and.PT.metadata.csv")) |> 
-  dplyr::select(!X)
 
 colnames(counts.df) <- metadata$orig.name
 
@@ -74,6 +74,13 @@ se <- SummarizedExperiment(assays = list(counts = counts.matrix),
                                   colData = coldata)
 se
 ```
+
+```{r}
+se <- se |> 
+  keep_abundant(factor_of_interest = condition) |> 
+  scale_abundance()
+```
+
 
 ```{r}
 dds <- DESeqDataSet(se, design = ~ condition)
@@ -99,7 +106,7 @@ res <- results(dds,
                alpha = 0.05)
 ```
 
-I'm a little unsure of how the normalization worked, consider these samples were run separate and 4 are paired end and the other two are single end. Using `plotMA` to check if the normalized worked.
+I'm a little unsure of how the normalization worked, consider these samples were run separate and four are paired end and the other two are single end. Using `plotMA` to check if the normalized worked.
 
 ```{r}
 DESeq2::plotMA(res)
@@ -111,6 +118,7 @@ Let's look at the result dataframe and save it. Dallas wants the DE genes entere
 
 ```{r}
 res.df <- deseqresult2df(res, FDR = 0.05)
+res.all.df <- deseqresult2df(res)
 
 counts.df <- counts.df |> 
   rownames_to_column(var = "id")
@@ -118,6 +126,7 @@ counts.df <- counts.df |>
 res.df <- res.df |> 
   left_join(counts.df, by ="id")
 
+write.csv(res.all.df, file = paste0(result.dir, "all.DESeq.CL.vs.Pt.csv"))
 write.csv(res.df, file = paste0(result.dir, "DESeq.CL.vs.Pt.csv"))
 ```
 
@@ -171,7 +180,6 @@ Test run with srbct data from the vignette
 ```{r}
 data(srbct)
 X <- srbct$gene
-head(X)
 
 # Outcome y that will be internally coded as dummy:
 Y <- srbct$class 
@@ -351,3 +359,47 @@ plotIndiv(final.plsda.srbct, ind.names = TRUE, legend=TRUE,
           X.label = 'PLS-DA comp 1', Y.label = 'PLS-DA comp 2')
 dev.off()
 ```
+
+
+# Combining counts with earlier data
+
+Dallas wants a counts matrix of these Pt vs CL samples with an earlier analysis
+
+```{r}
+head(counts.df)
+```
+
+```{r}
+ds.vs.kns.df <- read.csv(file =  "2024_06_20_results/ds.vs.kns.deseq.csv") |> 
+  dplyr::select(gene_id, 10:15)
+
+head(ds.vs.kns.df)
+
+colnames(ds.vs.kns.df) <- c("gene_id", "DS76_C", "DS81_C", "K_C", "N_C", "S_C", "DS1_C")
+```
+
+```{r}
+both.counts.df <- dplyr::full_join(counts.df, ds.vs.kns.df, by = c("id" = "gene_id"))
+
+head(both.counts.df)
+```
+
+
+```{r}
+write.csv(both.counts.df, file = paste0(result.dir, "CLvsPT.and.DSvsKNS.counts.csv"))
+```
+
+
+```{r}
+both.counts.matrix <- both.counts.df |> 
+  tibble::column_to_rownames("id") |> 
+  as.matrix()
+```
+
+```{r}
+both.counts.matrix[is.na(both.counts.matrix)] <- 0
+
+apply(both.counts.matrix, MARGIN = 2, FUN = sum)
+```
+
+
